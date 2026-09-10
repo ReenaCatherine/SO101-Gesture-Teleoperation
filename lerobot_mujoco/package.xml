@@ -1,0 +1,27 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>lerobot_mujoco</name>
+  <version>0.0.0</version>
+  <description>
+    Standalone, self-contained MuJoCo simulator for the SO-101 arm: its own
+    local copy of the URDF and meshes lives in urdf/ and meshes/ (no
+    lerobot_description or xacro dependency), and it replays the same named
+    forward-kinematics poses from lerobot_moveit/config/so101.srdf using
+    MuJoCo's own physics and position servos, with no ROS 2 nodes,
+    move_group, or controller stack required.
+  </description>
+  <maintainer email="sruthihsr@gmail.com">sruthi</maintainer>
+  <license>Apache-2.0</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <exec_depend>lerobot_moveit</exec_depend>
+
+  <test_depend>ament_lint_auto</test_depend>
+  <test_depend>ament_lint_common</test_depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>

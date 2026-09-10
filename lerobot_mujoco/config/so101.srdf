@@ -1,0 +1,131 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--This does not replace URDF, and is not an extension
+of URDF.
+    This is a format for representing semantic information about the robot structure.
+    A URDF file must exist for this robot as well, where the joints and the links that are referenced
+are defined
+-->
+<robot name="so101">
+    <!--GROUPS:
+    Representation of a set of joints and links. This can be useful for specifying DOF to plan for,
+    defining arms, end effectors, etc-->
+    <!--LINKS:
+    When a link is specified, the parent joint of that link (if it exists) is automatically
+    included-->
+    <!--JOINTS:
+    When a joint is specified, the child link of that joint (which will always exist) is
+    automatically included-->
+    <!--CHAINS:
+    When a chain is specified, all the links along the chain (including endpoints) are included in
+    the group. Additionally, all the joints that are parents to included links are also included.
+    This means that joints along the chain and the parent joint of the base link are included in the
+    group-->
+    <!--SUBGROUPS:
+    Groups can also be formed by referencing to already defined group names-->
+    <group name="arm">
+        <joint name="base_joint" />
+        <joint name="1" />
+        <joint name="2" />
+        <joint name="3" />
+        <joint name="4" />
+        <joint name="5" />
+    </group>
+    <group name="gripper">
+        <joint name="6" />
+    </group>
+    <!--GROUP
+    STATES: Purpose: Define a named state for a particular group, in terms of joint values. This is
+    useful to define states like 'folded arms'-->
+    <group_state name="home" group="arm">
+        <joint name="1" value="0.015343553863686413" />
+        <joint name="2" value="-0.015343553863686413" />
+        <joint name="3" value="0.23475637411440212" />
+        <joint name="4" value="-0.01227484309094913" />
+        <joint name="5" value="-0.006137421545474565" />
+
+    </group_state>
+    <group_state name="home" group="gripper">
+        <joint name="6" value="0.007671776931843207" />
+    </group_state>
+    <group_state name="pose_1" group="arm">
+        <joint name="1" value="0.20" />
+        <joint name="2" value="-0.20" />
+        <joint name="3" value="0.40" />
+        <joint name="4" value="-0.15" />
+        <joint name="5" value="0.05" />
+    </group_state>
+    <group_state name="pose_1" group="gripper">
+        <joint name="6" value="0.20" />
+    </group_state>
+    <group_state name="pose_2" group="arm">
+        <joint name="1" value="-0.25" />
+        <joint name="2" value="0.10" />
+        <joint name="3" value="0.15" />
+        <joint name="4" value="0.10" />
+        <joint name="5" value="-0.20" />
+    </group_state>
+    <group_state name="pose_2" group="gripper">
+        <joint name="6" value="0.40" />
+    </group_state>
+    <group_state name="pose_3" group="arm">
+        <joint name="1" value="0.05" />
+        <joint name="2" value="-0.40" />
+        <joint name="3" value="0.55" />
+        <joint name="4" value="-0.25" />
+        <joint name="5" value="0.05" />
+    </group_state>
+    <group_state name="pose_3" group="gripper">
+        <joint name="6" value="-0.02" />
+    </group_state>
+    <group_state name="pose_4" group="arm">
+        <joint name="1" value="-0.15" />
+        <joint name="2" value="0.20" />
+        <joint name="3" value="0.10" />
+        <joint name="4" value="0.20" />
+        <joint name="5" value="-0.05" />
+    </group_state>
+    <group_state name="pose_4" group="gripper">
+        <joint name="6" value="0.60" />
+    </group_state>
+    <group_state name="vertical" group="arm">
+        <joint name="1" value="0.0" />
+        <joint name="2" value="0.0" />
+        <joint name="3" value="1.40" />
+        <joint name="4" value="0.0" />
+        <joint name="5" value="0.0" />
+    </group_state>
+    <group_state name="vertical" group="gripper">
+        <joint name="6" value="0.0" />
+    </group_state>
+    <group_state name="vertical_down" group="arm">
+        <joint name="1" value="0.0" />
+        <joint name="2" value="0.0" />
+        <joint name="3" value="-0.85" />
+        <joint name="4" value="0.0" />
+        <joint name="5" value="0.0" />
+    </group_state>
+    <group_state name="vertical_down" group="gripper">
+        <joint name="6" value="0.0" />
+    </group_state>
+    <!--END
+    EFFECTOR: Purpose: Represent information about an end effector.-->
+    <!--PASSIVE
+    JOINT: Purpose: this element is used to mark joints that are not actuated-->
+    <!-- <passive_joint name="joint_5"/> -->
+    <!--DISABLE
+    COLLISIONS: By default it is assumed that any link of the robot could potentially come into
+    collision with any other link in the robot. This tag disables collision checking between a
+    specified pair of links. -->
+    <disable_collisions link1="base" link2="shoulder" reason="Adjacent" />
+    <disable_collisions link1="base" link2="lower_arm" reason="Never" />
+    <disable_collisions link1="base" link2="lower_arm" reason="Never" />
+    <disable_collisions link1="shoulder" link2="upper_arm" reason="Adjacent" />
+    <disable_collisions link1="shoulder" link2="lower_arm" reason="Never" />
+    <disable_collisions link1="lower_arm" link2="upper_arm" reason="Adjacent" />
+    <disable_collisions link1="lower_arm" link2="gripper" reason="Never" />
+    <disable_collisions link1="lower_arm" link2="upper_arm" reason="Adjacent" />
+    <disable_collisions link1="lower_arm" link2="wrist" reason="Adjacent" />
+    <disable_collisions link1="wrist" link2="gripper" reason="Adjacent" />
+    <disable_collisions link1="wrist" link2="jaw" reason="Never" />
+    <disable_collisions link1="gripper" link2="jaw" reason="Adjacent" />
+</robot>
