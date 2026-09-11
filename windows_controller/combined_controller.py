@@ -36,7 +36,7 @@ cap = cv2.VideoCapture(0)
 
 if not cap.isOpened():
     print("ERROR: Could not open webcam.")
-    exit()
+    raise SystemExit
 
 
 # ============================================================
@@ -46,10 +46,11 @@ if not cap.isOpened():
 mode = "CARTESIAN"
 
 enabled = False
+keyboard_control = False
 
-# Emergency stop is LATCHED.
-# SPACE activates it.
-# R resets it.
+# Emergency stop is latched.
+# SPACE = stop
+# R = reset
 emergency_stop = False
 
 
@@ -62,22 +63,71 @@ speed = 50
 
 # ============================================================
 # CARTESIAN POSITION
+#
+# KEEPING YOUR ORIGINAL VALUES
 # ============================================================
 
 x = 0.0
 y = 0.0
 z = 0.15
+
+
+# ============================================================
+# JOINT POSITIONS
+#
+# J1-J5 = arm joints
+# J6 = gripper state
+# ============================================================
+
+joints = [0.0, 0.0, 0.0, 0.0, 0.0]
+
+gripper_closed = False
+
+
+# ============================================================
+# KEYBOARD STEP
+# ============================================================
+
+KEY_STEP = 0.01
+
+
+# ============================================================
+# ROBOT CONNECTION
+# ============================================================
+
 print("REACHED ROBOT CONNECTION CODE")
+
 ROBOT_HOST = "172.27.7.2"
 ROBOT_PORT = 5000
 
-robot_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-robot_socket.connect((ROBOT_HOST, ROBOT_PORT))
+robot_socket = socket.socket(
+    socket.AF_INET,
+    socket.SOCK_STREAM
+)
 
-print("Connected to MuJoCo bridge")
+try:
+
+    robot_socket.connect(
+        (ROBOT_HOST, ROBOT_PORT)
+    )
+
+    print("Connected to MuJoCo bridge")
+
+except Exception as e:
+
+    print("ERROR: Could not connect to MuJoCo bridge.")
+    print(e)
+
+    cap.release()
+    detector.close()
+
+    raise SystemExit
+
 
 # ============================================================
-# VIRTUAL CARTESIAN LIMITS
+# CARTESIAN SOFT LIMITS
+#
+# KEEPING YOUR ORIGINAL LIMITS
 # ============================================================
 
 X_MIN = -0.20
@@ -91,10 +141,18 @@ Z_MAX = 0.30
 
 
 # ============================================================
-# VIRTUAL JOINT POSITIONS
+# SO-101 JOINT LIMITS
+#
+# radians
 # ============================================================
 
-joints = [0, 0, 0, 0, 0, 0]
+JOINT_LIMITS = [
+    (-1.91986,  1.91986),
+    (-1.74533,  1.74533),
+    (-1.74533,  1.57080),
+    (-1.65806,  1.65806),
+    (-2.79253,  2.79253),
+]
 
 
 # ============================================================
@@ -102,31 +160,130 @@ joints = [0, 0, 0, 0, 0, 0]
 # ============================================================
 
 def clamp(value, minimum, maximum):
-    return max(minimum, min(value, maximum))
+
+    return max(
+        minimum,
+        min(value, maximum)
+    )
 
 
 def distance(p1, p2):
+
     return math.sqrt(
         (p1.x - p2.x) ** 2 +
         (p1.y - p2.y) ** 2
     )
 
 
+def clamp_joint(index, value):
+
+    minimum, maximum = JOINT_LIMITS[index]
+
+    return clamp(
+        value,
+        minimum,
+        maximum
+    )
+
+
+# ============================================================
+# SEND CARTESIAN COMMAND
+#
+# C,x,y,z,gripper
+#
+# gripper:
+# 0 = open
+# 1 = closed
+# ============================================================
+
+def send_cartesian_command():
+
+    gripper = (
+        1
+        if gripper_closed
+        else 0
+    )
+
+    message = (
+        f"C,"
+        f"{x:.4f},"
+        f"{y:.4f},"
+        f"{z:.4f},"
+        f"{gripper}\n"
+    )
+
+    try:
+
+        robot_socket.sendall(
+            message.encode()
+        )
+
+    except Exception as e:
+
+        print(
+            "Socket send error:",
+            e
+        )
+
+
+# ============================================================
+# SEND JOINT COMMAND
+#
+# J,j1,j2,j3,j4,j5,gripper
+#
+# Joint values are radians.
+# ============================================================
+
+def send_joint_command():
+
+    gripper = (
+        0
+        if gripper_closed
+        else 1
+    )
+
+    message = (
+        f"J,"
+        f"{joints[0]:.4f},"
+        f"{joints[1]:.4f},"
+        f"{joints[2]:.4f},"
+        f"{joints[3]:.4f},"
+        f"{joints[4]:.4f},"
+        f"{gripper}\n"
+    )
+
+    try:
+
+        robot_socket.sendall(
+            message.encode()
+        )
+
+    except Exception as e:
+
+        print(
+            "Socket send error:",
+            e
+        )
+
+
+# ============================================================
+# GESTURE DETECTION
+# ============================================================
+
 def detect_gesture(landmarks):
+
     """
-    Simple gesture classifier.
+    OPEN PALM
+        Enables gesture control.
 
-    OPEN PALM:
-        Enables normal control.
+    PINCH
+        Closes gripper while control is active.
 
-    FIST:
-        Only reported as a gesture.
+    FIST
+        Stops gesture control.
 
-    PINCH:
-        Only reported as a gesture.
-
-    Emergency stop:
-        Controlled independently by SPACE.
+    OTHER
+        No action.
     """
 
     # --------------------------------------------------------
@@ -139,6 +296,7 @@ def detect_gesture(landmarks):
     )
 
     if thumb_index < 0.08:
+
         return "PINCH"
 
 
@@ -146,10 +304,25 @@ def detect_gesture(landmarks):
     # FINGER EXTENSION
     # --------------------------------------------------------
 
-    index = landmarks[8].y < landmarks[6].y
-    middle = landmarks[12].y < landmarks[10].y
-    ring = landmarks[16].y < landmarks[14].y
-    pinky = landmarks[20].y < landmarks[18].y
+    index = (
+        landmarks[8].y
+        < landmarks[6].y
+    )
+
+    middle = (
+        landmarks[12].y
+        < landmarks[10].y
+    )
+
+    ring = (
+        landmarks[16].y
+        < landmarks[14].y
+    )
+
+    pinky = (
+        landmarks[20].y
+        < landmarks[18].y
+    )
 
     count = sum([
         index,
@@ -164,6 +337,7 @@ def detect_gesture(landmarks):
     # --------------------------------------------------------
 
     if count >= 4:
+
         return "OPEN PALM"
 
 
@@ -172,6 +346,7 @@ def detect_gesture(landmarks):
     # --------------------------------------------------------
 
     if count == 0:
+
         return "FIST"
 
 
@@ -183,6 +358,7 @@ def detect_gesture(landmarks):
 # ============================================================
 
 previous_time = time.time()
+
 frame_timestamp_ms = 0
 
 
@@ -190,266 +366,662 @@ frame_timestamp_ms = 0
 # MAIN LOOP
 # ============================================================
 
-while True:
+try:
 
-    success, frame = cap.read()
+    while True:
 
-    if not success:
-        print("ERROR: Could not read camera.")
-        break
+        success, frame = cap.read()
 
+        if not success:
 
-    # --------------------------------------------------------
-    # MIRROR CAMERA
-    # --------------------------------------------------------
+            print(
+                "ERROR: Could not read camera."
+            )
 
-    frame = cv2.flip(frame, 1)
-
-
-    # --------------------------------------------------------
-    # FRAME DIMENSIONS
-    # --------------------------------------------------------
-
-    h, w, _ = frame.shape
-
-
-    # --------------------------------------------------------
-    # CONVERT BGR -> RGB
-    # --------------------------------------------------------
-
-    rgb = cv2.cvtColor(
-        frame,
-        cv2.COLOR_BGR2RGB
-    )
-
-
-    # --------------------------------------------------------
-    # CREATE MEDIAPIPE IMAGE
-    # --------------------------------------------------------
-
-    mp_image = mp.Image(
-        image_format=mp.ImageFormat.SRGB,
-        data=rgb
-    )
-
-
-    frame_timestamp_ms += 33
-
-
-    # --------------------------------------------------------
-    # HAND DETECTION
-    # --------------------------------------------------------
-
-    result = detector.detect_for_video(
-        mp_image,
-        frame_timestamp_ms
-    )
-
-
-    # ========================================================
-    # HAND DETECTION / GESTURE
-    # ========================================================
-
-    gesture = "NO HAND"
-    wrist = None
-
-    # Default value so DEPTH display works even when
-    # no hand is detected.
-    hand_depth = 0.0
-
-
-    if result.hand_landmarks:
-
-        landmarks = result.hand_landmarks[0]
-
-        wrist = landmarks[0]
-
-        gesture = detect_gesture(landmarks)
+            break
 
 
         # ----------------------------------------------------
-        # WRIST
+        # MIRROR CAMERA
         # ----------------------------------------------------
 
-        wrist_x = int(wrist.x * w)
-        wrist_y = int(wrist.y * h)
-
-        cv2.circle(
+        frame = cv2.flip(
             frame,
-            (wrist_x, wrist_y),
-            10,
-            (0, 255, 0),
-            -1
+            1
         )
 
 
         # ----------------------------------------------------
-        # DRAW HAND LANDMARKS
+        # FRAME SIZE
         # ----------------------------------------------------
 
-        for landmark in landmarks:
+        h, w, _ = frame.shape
 
-            px = int(landmark.x * w)
-            py = int(landmark.y * h)
+
+        # ----------------------------------------------------
+        # CONVERT BGR -> RGB
+        # ----------------------------------------------------
+
+        rgb = cv2.cvtColor(
+            frame,
+            cv2.COLOR_BGR2RGB
+        )
+
+
+        # ----------------------------------------------------
+        # MEDIAPIPE IMAGE
+        # ----------------------------------------------------
+
+        mp_image = mp.Image(
+            image_format=mp.ImageFormat.SRGB,
+            data=rgb
+        )
+
+
+        # ----------------------------------------------------
+        # TIMESTAMP
+        # ----------------------------------------------------
+
+        frame_timestamp_ms += 33
+
+
+        # ----------------------------------------------------
+        # HAND DETECTION
+        # ----------------------------------------------------
+
+        result = detector.detect_for_video(
+            mp_image,
+            frame_timestamp_ms
+        )
+
+
+        # ----------------------------------------------------
+        # DEFAULT VALUES
+        # ----------------------------------------------------
+
+        gesture = "NO HAND"
+
+        wrist = None
+
+        landmarks = None
+
+        hand_depth = 0.0
+
+
+        # ====================================================
+        # HAND DETECTED
+        # ====================================================
+
+        if result.hand_landmarks:
+
+            landmarks = result.hand_landmarks[0]
+
+            wrist = landmarks[0]
+
+            gesture = detect_gesture(
+                landmarks
+            )
+
+
+            # ------------------------------------------------
+            # WRIST
+            # ------------------------------------------------
+
+            wrist_x = int(
+                wrist.x * w
+            )
+
+            wrist_y = int(
+                wrist.y * h
+            )
 
             cv2.circle(
                 frame,
-                (px, py),
-                4,
+                (wrist_x, wrist_y),
+                10,
                 (0, 255, 0),
                 -1
             )
 
 
-    # ========================================================
-    # NORMAL GESTURE CONTROL
-    # ========================================================
+            # ------------------------------------------------
+            # DRAW HAND LANDMARKS
+            # ------------------------------------------------
 
-    if gesture == "OPEN PALM" and not emergency_stop:
+            for landmark in landmarks:
 
-        enabled = True
+                px = int(
+                    landmark.x * w
+                )
 
+                py = int(
+                    landmark.y * h
+                )
 
-    # ========================================================
-    # KEYBOARD INPUT
-    # ========================================================
-
-    key = cv2.waitKey(1) & 0xFF
-
-
-    # ========================================================
-    # Q = QUIT
-    # ========================================================
-
-    if key == ord("q"):
-        break
-
-
-    # ========================================================
-    # C = CARTESIAN MODE
-    # ========================================================
-
-    if key == ord("c"):
-
-        mode = "CARTESIAN"
-
-        print("Mode changed to CARTESIAN")
+                cv2.circle(
+                    frame,
+                    (px, py),
+                    4,
+                    (0, 255, 0),
+                    -1
+                )
 
 
-    # ========================================================
-    # J = JOINT MODE
-    # ========================================================
+            # ------------------------------------------------
+            # HAND DEPTH
+            # ------------------------------------------------
 
-    if key == ord("j"):
-
-        mode = "JOINT"
-
-        print("Mode changed to JOINT")
-
-
-    # ========================================================
-    # + / = = INCREASE SPEED
-    # ========================================================
-
-    if key in [ord("+"), ord("=")]:
-
-        speed += 10
-
-        speed = min(speed, 100)
-
-        print(f"Speed: {speed}%")
-
-
-    # ========================================================
-    # - = DECREASE SPEED
-    # ========================================================
-
-    if key == ord("-"):
-
-        speed -= 10
-
-        speed = max(speed, 10)
-
-        print(f"Speed: {speed}%")
-
-
-    # ========================================================
-    # SPACE = EMERGENCY STOP
-    # ========================================================
-    #
-    # Works regardless of:
-    #   - gesture
-    #   - mode
-    #   - hand visibility
-    #   - speed
-    #
-    # Emergency stop remains active until R is pressed.
-    # ========================================================
-
-    if key == 32:
-
-        emergency_stop = True
-        enabled = False
-
-        print("!!! EMERGENCY STOP !!!")
-
-
-    # ========================================================
-    # R = RESET EMERGENCY STOP
-    # ========================================================
-
-    if key == ord("r"):
-
-        emergency_stop = False
-        enabled = False
-
-        print(
-            "Emergency stop reset. "
-            "Show OPEN PALM to enable control."
-        )
-
-
-    # ========================================================
-    # ROBOT COMMAND LOGIC
-    # ========================================================
-
-    command = "WAIT"
-
-
-    # ========================================================
-    # EMERGENCY STOP HAS HIGHEST PRIORITY
-    # ========================================================
-
-    if emergency_stop:
-
-        command = "STOP"
-
-
-    # ========================================================
-    # NORMAL CONTROL
-    # ========================================================
-
-    elif enabled:
-
-        command = "MOVE"
+            hand_depth = distance(
+                landmarks[0],
+                landmarks[12]
+            )
 
 
         # ====================================================
-        # CARTESIAN MODE
+        # GESTURE ACTIONS
         # ====================================================
 
-        if mode == "CARTESIAN":
+        if not emergency_stop:
+
+            if gesture == "OPEN PALM":
+
+                if not keyboard_control:
+
+                    enabled = True
+
+                gripper_closed = False
+
+
+            elif gesture == "PINCH":
+
+                if enabled or keyboard_control:
+
+                    gripper_closed = True
+
+
+            elif gesture == "FIST":
+
+                enabled = False
+
+                keyboard_control = False
+            # ------------------------------------------------
+            # OTHER / NO HAND
+            # ------------------------------------------------
+
+            else:
+
+                pass
+
+
+        # ====================================================
+        # KEYBOARD INPUT
+        # ====================================================
+
+        key = cv2.waitKeyEx(1)
+
+
+        # ====================================================
+        # Q = QUIT
+        # ====================================================
+
+        if key == ord("q"):
+
+            break
+
+
+        # ====================================================
+        # C = CARTESIAN MODE
+        # ====================================================
+
+        elif key == ord("c"):
+
+            mode = "CARTESIAN"
+
+            keyboard_control = False
+
+            enabled = False
+
+            print(
+                "Mode changed to CARTESIAN"
+            )
+
+
+        # ====================================================
+        # J = JOINT MODE
+        # ====================================================
+
+        elif key == ord("j"):
+
+            mode = "JOINT"
+
+            keyboard_control = False
+
+            enabled = False
+
+            print(
+                "Mode changed to JOINT"
+            )
+
+
+        # ====================================================
+        # SPEED UP
+        # ====================================================
+
+        elif key in [
+            ord("+"),
+            ord("=")
+        ]:
+
+            speed = min(
+                100,
+                speed + 5
+            )
+
+            print(
+                f"Speed: {speed}%"
+            )
+
+
+        # ====================================================
+        # SPEED DOWN
+        # ====================================================
+
+        elif key in [
+            ord("-"),
+            ord("_")
+        ]:
+
+            speed = max(
+                5,
+                speed - 5
+            )
+
+            print(
+                f"Speed: {speed}%"
+            )
+
+
+        # ====================================================
+        # SPACE = EMERGENCY STOP
+        # ====================================================
+
+        elif key == 32:
+
+            emergency_stop = True
+
+            enabled = False
+
+            keyboard_control = False
+
+            print(
+                "!!! EMERGENCY STOP !!!"
+            )
+
+
+        # ====================================================
+        # R = RESET
+        # ====================================================
+
+        elif key in [
+            ord("r"),
+            ord("R")
+        ]:
+
+            emergency_stop = False
+
+            enabled = False
+
+            keyboard_control = False
+
+            print(
+                "Emergency stop reset. "
+                "Show OPEN PALM to enable control."
+            )
+
+
+        # ====================================================
+        # O = GRIPPER OPEN
+        # ====================================================
+
+        elif key == ord("o"):
+
+            gripper_closed = False
+
+            print(
+                "Gripper: OPEN"
+            )
+
+
+        # ====================================================
+        # P = GRIPPER CLOSE
+        # ====================================================
+
+        elif key == ord("p"):
+
+            gripper_closed = True
+
+            print(
+                "Gripper: CLOSED"
+            )
+
+
+        # ====================================================
+        # CARTESIAN KEYBOARD CONTROL
+        # ====================================================
+
+        elif (
+            mode == "CARTESIAN"
+            and not emergency_stop
+        ):
+
+            step = (
+                KEY_STEP
+                * (speed / 50)
+            )
+
+            keyboard_move = False
+
+
+            # ------------------------------------------------
+            # W / S -> Y
+            # ------------------------------------------------
+
+            if key == ord("w"):
+
+                y += step
+
+                keyboard_move = True
+
+
+            elif key == ord("s"):
+
+                y -= step
+
+                keyboard_move = True
+
+
+            # ------------------------------------------------
+            # A / D -> X
+            # ------------------------------------------------
+
+            elif key == ord("a"):
+
+                x -= step
+
+                keyboard_move = True
+
+
+            elif key == ord("d"):
+
+                x += step
+
+                keyboard_move = True
+
+
+            # ------------------------------------------------
+            # UP / DOWN -> Z
+            # ------------------------------------------------
+
+            elif key in [
+                82,
+                2490368
+            ]:
+
+                z += step
+
+                keyboard_move = True
+
+
+            elif key in [
+                84,
+                2621440
+            ]:
+
+                z -= step
+
+                keyboard_move = True
+
+
+            # ------------------------------------------------
+            # LEFT / RIGHT -> X
+            # ------------------------------------------------
+
+            elif key in [
+                81,
+                2424832
+            ]:
+
+                x -= step
+
+                keyboard_move = True
+
+
+            elif key in [
+                83,
+                2555904
+            ]:
+
+                x += step
+
+                keyboard_move = True
+
+
+            # ------------------------------------------------
+            # Activate keyboard control
+            # ------------------------------------------------
+
+            if keyboard_move:
+
+                keyboard_control = True
+
+                enabled = False
+
+
+            # ------------------------------------------------
+            # Cartesian soft limits
+            # ------------------------------------------------
+
+            x = clamp(
+                x,
+                X_MIN,
+                X_MAX
+            )
+
+            y = clamp(
+                y,
+                Y_MIN,
+                Y_MAX
+            )
+
+            z = clamp(
+                z,
+                Z_MIN,
+                Z_MAX
+            )
+
+
+        # ====================================================
+        # JOINT KEYBOARD CONTROL
+        # ====================================================
+
+        elif (
+            mode == "JOINT"
+            and not emergency_stop
+        ):
+
+            joint_step = (
+                0.05
+                * (speed / 50)
+            )
+
+            joint_move = False
+
+
+            # ------------------------------------------------
+            # J1 = A / D
+            # ------------------------------------------------
+
+            if key == ord("a"):
+
+                joints[0] -= joint_step
+
+                joint_move = True
+
+
+            elif key == ord("d"):
+
+                joints[0] += joint_step
+
+                joint_move = True
+
+
+            # ------------------------------------------------
+            # J2 = W / S
+            # ------------------------------------------------
+
+            elif key == ord("w"):
+
+                joints[1] += joint_step
+
+                joint_move = True
+
+
+            elif key == ord("s"):
+
+                joints[1] -= joint_step
+
+                joint_move = True
+
+
+            # ------------------------------------------------
+            # J3 = UP / DOWN
+            # ------------------------------------------------
+
+            elif key in [
+                82,
+                2490368
+            ]:
+
+                joints[2] += joint_step
+
+                joint_move = True
+
+
+            elif key in [
+                84,
+                2621440
+            ]:
+
+                joints[2] -= joint_step
+
+                joint_move = True
+
+
+            # ------------------------------------------------
+            # J4 = LEFT / RIGHT
+            # ------------------------------------------------
+
+            elif key in [
+                81,
+                2424832
+            ]:
+
+                joints[3] -= joint_step
+
+                joint_move = True
+
+
+            elif key in [
+                83,
+                2555904
+            ]:
+
+                joints[3] += joint_step
+
+                joint_move = True
+
+
+            # ------------------------------------------------
+            # J5 = Z / X
+            #
+            # Using Z/X so Q remains QUIT.
+            # ------------------------------------------------
+
+            elif key == ord("z"):
+
+                joints[4] -= joint_step
+
+                joint_move = True
+
+
+            elif key == ord("x"):
+
+                joints[4] += joint_step
+
+                joint_move = True
+
+
+            # ------------------------------------------------
+            # Keyboard joint control active
+            # ------------------------------------------------
+
+            if joint_move:
+
+                keyboard_control = True
+
+                enabled = False
+
+
+            # ------------------------------------------------
+            # Joint limits
+            # ------------------------------------------------
+
+            for i in range(5):
+
+                joints[i] = clamp_joint(
+                    i,
+                    joints[i]
+                )
+
+
+        # ====================================================
+        # GESTURE CARTESIAN CONTROL
+        #
+        # THIS IS THE ORIGINAL WORKING MAPPING
+        # ====================================================
+
+        if (
+            mode == "CARTESIAN"
+            and enabled
+            and not keyboard_control
+            and not emergency_stop
+        ):
 
             if wrist is not None:
 
                 # ------------------------------------------------
-                # APPROXIMATE DEPTH
+                # HAND X -> ROBOT X
                 # ------------------------------------------------
-                #
-                # Landmark 0  = wrist
-                # Landmark 12 = middle fingertip
-                #
-                # This is currently only a rough depth proxy.
+
+                target_x = (
+                    (wrist.x - 0.5)
+                    * 0.3
+                )
+
+
+                # ------------------------------------------------
+                # HAND Y -> ROBOT Y
+                # ------------------------------------------------
+
+                target_y = (
+                    0.0
+                    - (wrist.y - 0.5)
+                    * 0.40
+                )
+
+
+                # ------------------------------------------------
+                # HAND DEPTH -> ROBOT Z
                 # ------------------------------------------------
 
                 hand_depth = distance(
@@ -457,47 +1029,40 @@ while True:
                     landmarks[12]
                 )
 
+                target_z = (
+                    0.20
+                    + (hand_depth - 0.680)
+                    * 0.60
+                )
+
 
                 # ------------------------------------------------
-                # HAND X -> ROBOT X
-                # ------------------------------------------------
-
-                target_x = ((wrist.x - 0.5) * 0.3)
-
-                # ------------------------------------------------
-                # APPROXIMATE HAND DEPTH -> ROBOT Y
-                # ------------------------------------------------
-
-                target_y = 0.0 - (wrist.y - 0.5) * 0.40
-
-                # ------------------------------------------------
-                # HAND VERTICAL POSITION -> ROBOT Z
-                # ------------------------------------------------
-
-                hand_depth = distance(landmarks[0], landmarks[12])
-                target_z = 0.20 + (hand_depth - 0.680) * 0.60
-
-                # ------------------------------------------------
-                # GRADUAL MOVEMENT / SMOOTHING
+                # ORIGINAL SMOOTHING
                 # ------------------------------------------------
 
                 x += (
                     target_x - x
-                ) * (speed / 100) * 0.1
+                ) * (
+                    speed / 100
+                ) * 0.1
 
 
                 y += (
                     target_y - y
-                ) * (speed / 100) * 0.1
+                ) * (
+                    speed / 100
+                ) * 0.1
 
 
                 z += (
                     target_z - z
-                ) * (speed / 100) * 0.1
+                ) * (
+                    speed / 100
+                ) * 0.1
 
 
                 # ------------------------------------------------
-                # APPLY VIRTUAL SOFT LIMITS
+                # ORIGINAL SOFT LIMITS
                 # ------------------------------------------------
 
                 x = clamp(
@@ -506,13 +1071,11 @@ while True:
                     X_MAX
                 )
 
-
                 y = clamp(
                     y,
                     Y_MIN,
                     Y_MAX
                 )
-
 
                 z = clamp(
                     z,
@@ -520,282 +1083,488 @@ while True:
                     Z_MAX
                 )
 
-                # ------------------------------------------------
-                # SEND SMOOTHED XYZ TO MUJOCO
-                # ------------------------------------------------
-
-                message = f"{x:.4f},{y:.4f},{z:.4f}\n"
-                robot_socket.sendall(
-                    message.encode()
-)
-
-
         # ====================================================
-        # JOINT MODE
+        # JOINT GESTURE CONTROL
         # ====================================================
 
-        elif mode == "JOINT":
+        if (
+            mode == "JOINT"
+            and enabled
+            and not keyboard_control
+            and not emergency_stop
+        ):
 
-            if wrist is not None:
-
-                # ------------------------------------------------
-                # HORIZONTAL HAND POSITION -> JOINT 1
-                # ------------------------------------------------
-
-                joint_target = (
-                    wrist.x - 0.5
-                ) * 180
-
+            if landmarks is not None:
 
                 # ------------------------------------------------
-                # SMOOTH JOINT MOVEMENT
+                # J1 = HAND LEFT / RIGHT
                 # ------------------------------------------------
 
-                joints[0] += (
-                    joint_target - joints[0]
-                ) * (speed / 100) * 0.1
+                hand_x = wrist.x - 0.5
+
+                if abs(hand_x) > 0.05:
+
+                    if hand_x > 0:
+                        movement = hand_x - 0.05
+                    else:
+                        movement = hand_x + 0.05
+
+                    joints[0] += (
+                        movement
+                        * 0.08
+                        * (speed / 50)
+                    )
 
 
                 # ------------------------------------------------
-                # JOINT 1 VIRTUAL LIMIT
+                # J2 = HAND UP / DOWN
                 # ------------------------------------------------
 
-                joints[0] = clamp(
-                    joints[0],
-                    -90,
-                    90
+                hand_y = 0.5 - wrist.y
+
+                if abs(hand_y) > 0.05:
+
+                    if hand_y > 0:
+                        movement = hand_y - 0.05
+                    else:
+                        movement = hand_y + 0.05
+
+                    joints[1] += (
+                        movement
+                        * 0.06
+                        * (speed / 50)
+                    )
+
+
+                # ------------------------------------------------
+                # J3 = HAND DEPTH
+                # ------------------------------------------------
+
+                depth_error = hand_depth - 0.10
+
+                if abs(depth_error) > 0.015:
+
+                    joints[2] += (
+                        depth_error
+                        * 0.05
+                        * (speed / 50)
+                    )
+
+
+                # ------------------------------------------------
+                # J4 = HAND TILT
+                # ------------------------------------------------
+
+                palm_dx = (
+                    landmarks[17].x
+                    - landmarks[5].x
+                )
+
+                palm_dy = (
+                    landmarks[17].y
+                    - landmarks[5].y
+                )
+
+                palm_angle = math.atan2(
+                    palm_dy,
+                    palm_dx
+                )
+
+                joints[3] += (
+                    palm_angle
+                    * 0.01
+                    * (speed / 50)
                 )
 
 
-    # ========================================================
-    # FPS
-    # ========================================================
+                # ------------------------------------------------
+                # J5 = HAND ROTATION
+                # ------------------------------------------------
 
-    current_time = time.time()
+                wrist_to_index_x = (
+                    landmarks[8].x
+                    - landmarks[0].x
+                )
 
-    elapsed = current_time - previous_time
+                wrist_to_index_y = (
+                    landmarks[8].y
+                    - landmarks[0].y
+                )
 
-    if elapsed > 0:
-        fps = 1 / elapsed
-    else:
-        fps = 0
+                hand_angle = math.atan2(
+                    wrist_to_index_y,
+                    wrist_to_index_x
+                )
 
-    previous_time = current_time
-
-
-    # ========================================================
-    # DISPLAY: MODE
-    # ========================================================
-
-    cv2.putText(
-        frame,
-        f"MODE: {mode}",
-        (10, 35),
-        cv2.FONT_HERSHEY_SIMPLEX,
-        0.8,
-        (0, 255, 0),
-        2
-    )
+                joints[4] += (
+                    hand_angle
+                    * 0.005
+                    * (speed / 50)
+                )
 
 
-    # ========================================================
-    # DISPLAY: GESTURE
-    # ========================================================
+                # ------------------------------------------------
+                # JOINT SAFETY LIMITS
+                # ------------------------------------------------
 
-    cv2.putText(
-        frame,
-        f"GESTURE: {gesture}",
-        (10, 70),
-        cv2.FONT_HERSHEY_SIMPLEX,
-        0.7,
-        (255, 255, 255),
-        2
-    )
+                for i in range(5):
 
+                    joints[i] = clamp_joint(
+                        i,
+                        joints[i]
+                    )
 
-    # ========================================================
-    # DISPLAY: SPEED
-    # ========================================================
+        # ====================================================
+        # SEND ROBOT COMMAND
+        # ====================================================
 
-    cv2.putText(
-        frame,
-        f"SPEED: {speed}%",
-        (10, 105),
-        cv2.FONT_HERSHEY_SIMPLEX,
-        0.7,
-        (255, 255, 255),
-        2
-    )
+        command = "WAIT"
 
 
-    # ========================================================
-    # DISPLAY: COMMAND
-    # ========================================================
+        if emergency_stop:
 
-    cv2.putText(
-        frame,
-        f"COMMAND: {command}",
-        (10, 140),
-        cv2.FONT_HERSHEY_SIMPLEX,
-        0.7,
-        (255, 255, 255),
-        2
-    )
+            command = "STOP"
 
 
-    # ========================================================
-    # DISPLAY: CARTESIAN POSITION
-    # ========================================================
+        elif mode == "CARTESIAN":
 
-    if mode == "CARTESIAN":
+            if enabled or keyboard_control:
 
-        # ----------------------------------------------------
-        # X
-        # ----------------------------------------------------
+                send_cartesian_command()
+
+                command = "MOVE"
+
+
+        elif mode == "JOINT":
+
+            if enabled or keyboard_control:
+
+                send_joint_command()
+
+                command = "JOINT MOVE"
+
+
+        # ====================================================
+        # FPS
+        # ====================================================
+
+        current_time = time.time()
+
+        elapsed = (
+            current_time
+            - previous_time
+        )
+
+        if elapsed > 0:
+
+            fps = 1 / elapsed
+
+        else:
+
+            fps = 0
+
+        previous_time = current_time
+
+
+        # ====================================================
+        # DISPLAY: MODE
+        # ====================================================
 
         cv2.putText(
             frame,
-            f"X: {x:+.3f} m",
-            (10, 180),
+            f"MODE: {mode}",
+            (10, 35),
             cv2.FONT_HERSHEY_SIMPLEX,
-            0.65,
+            0.8,
+            (0, 255, 0),
+            2
+        )
+
+
+        # ====================================================
+        # DISPLAY: GESTURE
+        # ====================================================
+
+        cv2.putText(
+            frame,
+            f"GESTURE: {gesture}",
+            (10, 70),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.7,
             (255, 255, 255),
             2
         )
 
 
-        # ----------------------------------------------------
-        # Y
-        # ----------------------------------------------------
+        # ====================================================
+        # DISPLAY: CONTROL METHOD
+        # ====================================================
+
+        control_method = (
+            "KEYBOARD"
+            if keyboard_control
+            else (
+                "GESTURE"
+                if enabled
+                else "DISABLED"
+            )
+        )
 
         cv2.putText(
             frame,
-            f"Y: {y:+.3f} m",
-            (10, 210),
+            f"CONTROL: {control_method}",
+            (10, 105),
             cv2.FONT_HERSHEY_SIMPLEX,
-            0.65,
+            0.7,
             (255, 255, 255),
             2
         )
 
 
-        # ----------------------------------------------------
-        # Z
-        # ----------------------------------------------------
+        # ====================================================
+        # DISPLAY: SPEED
+        # ====================================================
 
         cv2.putText(
             frame,
-            f"Z: {z:+.3f} m",
-            (10, 240),
+            f"SPEED: {speed}%",
+            (10, 140),
             cv2.FONT_HERSHEY_SIMPLEX,
-            0.65,
+            0.7,
             (255, 255, 255),
             2
         )
 
 
-        # ----------------------------------------------------
-        # STEP 60 DEBUG:
-        # RAW DEPTH VALUE
-        # ----------------------------------------------------
+        # ====================================================
+        # DISPLAY: COMMAND
+        # ====================================================
 
         cv2.putText(
             frame,
-            f"DEPTH: {hand_depth:.3f}",
-            (10, 350),
+            f"COMMAND: {command}",
+            (10, 175),
             cv2.FONT_HERSHEY_SIMPLEX,
-            0.65,
+            0.7,
             (255, 255, 255),
             2
         )
 
 
-    else:
+        # ====================================================
+        # DISPLAY: POSITION
+        # ====================================================
+
+        if mode == "CARTESIAN":
+
+            cv2.putText(
+                frame,
+                f"X: {x:+.3f} m",
+                (10, 210),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.60,
+                (255, 255, 255),
+                2
+            )
+
+            cv2.putText(
+                frame,
+                f"Y: {y:+.3f} m",
+                (10, 240),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.60,
+                (255, 255, 255),
+                2
+            )
+
+            cv2.putText(
+                frame,
+                f"Z: {z:+.3f} m",
+                (10, 270),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.60,
+                (255, 255, 255),
+                2
+            )
+
+            cv2.putText(
+                frame,
+                f"DEPTH: {hand_depth:.3f}",
+                (10, 350),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.60,
+                (255, 255, 255),
+                2
+            )
+
+        else:
+
+            cv2.putText(
+                frame,
+                f"J1: {joints[0]:+.2f} rad",
+                (10, 210),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.55,
+                (255, 255, 255),
+                2
+            )
+
+            cv2.putText(
+                frame,
+                f"J2: {joints[1]:+.2f} rad",
+                (10, 235),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.55,
+                (255, 255, 255),
+                2
+            )
+
+            cv2.putText(
+                frame,
+                f"J3: {joints[2]:+.2f} rad",
+                (10, 260),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.55,
+                (255, 255, 255),
+                2
+            )
+
+            cv2.putText(
+                frame,
+                f"J4: {joints[3]:+.2f} rad",
+                (10, 285),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.55,
+                (255, 255, 255),
+                2
+            )
+
+            cv2.putText(
+                frame,
+                f"J5: {joints[4]:+.2f} rad",
+                (10, 310),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.55,
+                (255, 255, 255),
+                2
+            )
+
+
+        # ====================================================
+        # GRIPPER DISPLAY
+        # ====================================================
+
+        gripper_text = (
+            "CLOSED"
+            if gripper_closed
+            else "OPEN"
+        )
 
         cv2.putText(
             frame,
-            f"Joint 1: {joints[0]:+.1f} deg",
-            (10, 180),
+            f"GRIPPER: {gripper_text}",
+            (10, 385),
             cv2.FONT_HERSHEY_SIMPLEX,
-            0.65,
+            0.60,
             (255, 255, 255),
             2
         )
 
 
-    # ========================================================
-    # SAFETY STATUS
-    # ========================================================
+        # ====================================================
+        # SAFETY STATUS
+        # ====================================================
 
-    if emergency_stop:
+        if emergency_stop:
 
-        safety_text = "EMERGENCY STOP"
+            safety_text = "EMERGENCY STOP"
 
-    elif enabled:
+        elif enabled or keyboard_control:
 
-        safety_text = "CONTROL ENABLED"
+            safety_text = "CONTROL ENABLED"
 
-    else:
+        else:
 
-        safety_text = "CONTROL DISABLED"
-
-
-    cv2.putText(
-        frame,
-        safety_text,
-        (10, 280),
-        cv2.FONT_HERSHEY_SIMPLEX,
-        0.7,
-        (0, 255, 0),
-        2
-    )
+            safety_text = "CONTROL DISABLED"
 
 
-    # ========================================================
-    # FPS DISPLAY
-    # ========================================================
-
-    cv2.putText(
-        frame,
-        f"FPS: {fps:.1f}",
-        (10, 315),
-        cv2.FONT_HERSHEY_SIMPLEX,
-        0.7,
-        (0, 255, 0),
-        2
-    )
+        cv2.putText(
+            frame,
+            safety_text,
+            (10, 420),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.65,
+            (0, 255, 0),
+            2
+        )
 
 
-    # ========================================================
-    # KEYBOARD INSTRUCTIONS
-    # ========================================================
+        # ====================================================
+        # FPS
+        # ====================================================
 
-    cv2.putText(
-        frame,
-        "C: Cartesian | J: Joint | +/-: Speed | "
-        "SPACE: STOP | R: Reset | Q: Quit",
-        (10, h - 15),
-        cv2.FONT_HERSHEY_SIMPLEX,
-        0.45,
-        (255, 255, 255),
-        1
-    )
+        cv2.putText(
+            frame,
+            f"FPS: {fps:.1f}",
+            (10, 450),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.60,
+            (0, 255, 0),
+            2
+        )
+
+        # ====================================================
+        # SINGLE-LINE KEYBOARD SHORTCUTS
+        # ====================================================
+
+        shortcut_text = (
+            "C:Cartesian | J:Joint | +/-:Speed | "
+            "WASD/Arrows:Move | O:Open | P:Close | "
+            "SPACE:Stop | R:Reset | Q:Quit"
+        )
+
+        cv2.putText(
+            frame,
+            shortcut_text,
+            (5, h - 10),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.32,
+            (255, 255, 255),
+            1
+        )
 
 
-    # ========================================================
-    # SHOW WINDOW
-    # ========================================================
+        
+        # ====================================================
+        # SHOW WINDOW
+        # ====================================================
 
-    cv2.imshow(
-        "SO-101 Teleoperation Controller",
-        frame
-    )
+        cv2.imshow(
+            "SO-101 Teleoperation Controller",
+            frame
+        )
 
 
 # ============================================================
 # CLEANUP
 # ============================================================
 
-cap.release()
-detector.close()
-cv2.destroyAllWindows()
+finally:
+
+    cap.release()
+
+    detector.close()
+
+    cv2.destroyAllWindows()
+
+    try:
+
+        robot_socket.close()
+
+    except Exception:
+
+        pass
+
+    print(
+        "Controller closed."
+    )
