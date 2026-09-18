@@ -3,6 +3,7 @@ import mediapipe as mp
 import socket
 import math
 import time
+import ctypes
 
 from mediapipe.tasks import python
 from mediapipe.tasks.python import vision
@@ -89,7 +90,17 @@ gripper_closed = False
 # ============================================================
 
 KEY_STEP = 0.01
+VK_UP = 0x26
+VK_DOWN = 0x28
+VK_LEFT = 0x25
+VK_RIGHT = 0x27
 
+
+def key_is_down(vk_code):
+    return bool(
+        ctypes.windll.user32.GetAsyncKeyState(vk_code)
+        & 0x8000
+    )
 
 # ============================================================
 # ROBOT CONNECTION
@@ -759,47 +770,64 @@ try:
 
 
             # ------------------------------------------------
-            # UP / DOWN -> Z
+            # ARROW KEYS
+            #
+            # UP / DOWN  -> Z
+            # LEFT / RIGHT -> X
             # ------------------------------------------------
 
-            elif key in [
-                82,
-                2490368
-            ]:
+            if key_is_down(VK_UP):
 
                 z += step
 
                 keyboard_move = True
 
 
-            elif key in [
-                84,
-                2621440
-            ]:
+            if key_is_down(VK_DOWN):
 
                 z -= step
 
                 keyboard_move = True
 
 
-            # ------------------------------------------------
-            # LEFT / RIGHT -> X
-            # ------------------------------------------------
-
-            elif key in [
-                81,
-                2424832
-            ]:
+            if key_is_down(VK_LEFT):
 
                 x -= step
 
                 keyboard_move = True
 
 
-            elif key in [
-                83,
-                2555904
-            ]:
+            if key_is_down(VK_RIGHT):
+
+                x += step
+
+                keyboard_move = True
+            # ------------------------------------------------
+            # Continuous WASD detection
+            # ------------------------------------------------
+
+            if key_is_down(ord("w")):
+
+                y += step
+
+                keyboard_move = True
+
+
+            if key_is_down(ord("s")):
+
+                y -= step
+
+                keyboard_move = True
+
+
+            if key_is_down(ord("a")):
+
+                x -= step
+
+                keyboard_move = True
+
+
+            if key_is_down(ord("d")):
 
                 x += step
 
@@ -838,8 +866,6 @@ try:
                 Z_MIN,
                 Z_MAX
             )
-
-
         # ====================================================
         # JOINT KEYBOARD CONTROL
         # ====================================================
@@ -857,110 +883,74 @@ try:
             joint_move = False
 
 
-            # ------------------------------------------------
             # J1 = A / D
-            # ------------------------------------------------
 
-            if key == ord("a"):
+            if key_is_down(0x41):  # A
 
                 joints[0] -= joint_step
-
                 joint_move = True
 
 
-            elif key == ord("d"):
+            if key_is_down(0x44):  # D
 
                 joints[0] += joint_step
-
                 joint_move = True
 
 
-            # ------------------------------------------------
             # J2 = W / S
-            # ------------------------------------------------
 
-            elif key == ord("w"):
+            if key_is_down(0x57):  # W
 
                 joints[1] += joint_step
-
                 joint_move = True
 
 
-            elif key == ord("s"):
+            if key_is_down(0x53):  # S
 
                 joints[1] -= joint_step
-
                 joint_move = True
 
 
-            # ------------------------------------------------
             # J3 = UP / DOWN
-            # ------------------------------------------------
 
-            elif key in [
-                82,
-                2490368
-            ]:
+            if key_is_down(VK_UP):
 
                 joints[2] += joint_step
-
                 joint_move = True
 
 
-            elif key in [
-                84,
-                2621440
-            ]:
+            if key_is_down(VK_DOWN):
 
                 joints[2] -= joint_step
-
                 joint_move = True
 
 
-            # ------------------------------------------------
             # J4 = LEFT / RIGHT
-            # ------------------------------------------------
 
-            elif key in [
-                81,
-                2424832
-            ]:
+            if key_is_down(VK_LEFT):
 
                 joints[3] -= joint_step
-
                 joint_move = True
 
 
-            elif key in [
-                83,
-                2555904
-            ]:
+            if key_is_down(VK_RIGHT):
 
                 joints[3] += joint_step
-
                 joint_move = True
 
 
-            # ------------------------------------------------
             # J5 = Z / X
-            #
-            # Using Z/X so Q remains QUIT.
-            # ------------------------------------------------
 
-            elif key == ord("z"):
+            if key_is_down(0x5A):  # Z
 
                 joints[4] -= joint_step
-
                 joint_move = True
 
 
-            elif key == ord("x"):
+            if key_is_down(0x58):  # X
 
                 joints[4] += joint_step
-
                 joint_move = True
-
-
             # ------------------------------------------------
             # Keyboard joint control active
             # ------------------------------------------------
@@ -982,8 +972,6 @@ try:
                     i,
                     joints[i]
                 )
-
-
         # ====================================================
         # GESTURE CARTESIAN CONTROL
         #
