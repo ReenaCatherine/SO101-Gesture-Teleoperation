@@ -10,7 +10,7 @@ from build_scene import build_model
 
 
 # ============================================================
-# NETWORK
+# TCP SERVER
 # ============================================================
 
 HOST = "0.0.0.0"
@@ -22,16 +22,16 @@ PORT = 5000
 # ============================================================
 
 JOINT_LIMITS = np.array([
-    [-1.91986,  1.91986],
-    [-1.74533,  1.74533],
-    [-1.74533,  1.57080],
-    [-1.65806,  1.65806],
-    [-2.79253,  2.79253],
+    [-1.91986,  1.91986],   # J1
+    [-1.74533,  1.74533],   # J2
+    [-1.74533,  1.57080],   # J3
+    [-1.65806,  1.65806],   # J4
+    [-2.79253,  2.79253],   # J5
 ])
 
 
 # ============================================================
-# MUJOCO MODEL
+# BUILD MUJOCO MODEL
 # ============================================================
 
 model, _ = build_model()
@@ -45,7 +45,7 @@ mujoco.mj_forward(
 
 
 # ============================================================
-# END-EFFECTOR BODY
+# JAW BODY
 # ============================================================
 
 jaw_id = mujoco.mj_name2id(
@@ -53,6 +53,11 @@ jaw_id = mujoco.mj_name2id(
     mujoco.mjtObj.mjOBJ_BODY,
     "jaw"
 )
+
+if jaw_id < 0:
+    raise RuntimeError(
+        "Could not find MuJoCo body named 'jaw'."
+    )
 
 
 # ============================================================
@@ -63,40 +68,81 @@ actuator_ids = {}
 
 for i in range(1, 7):
 
-    actuator_ids[i] = mujoco.mj_name2id(
+    actuator_id = mujoco.mj_name2id(
         model,
         mujoco.mjtObj.mjOBJ_ACTUATOR,
         f"actuator_{i}"
     )
 
+    if actuator_id < 0:
+
+        raise RuntimeError(
+            f"Could not find actuator_{i}"
+        )
+
+    actuator_ids[i] = actuator_id
+
+
+print("\nDetected actuators:")
+
+for i in range(1, 7):
+
+    actuator_id = actuator_ids[i]
+
+    ctrl_min = model.actuator_ctrlrange[
+        actuator_id,
+        0
+    ]
+
+    ctrl_max = model.actuator_ctrlrange[
+        actuator_id,
+        1
+    ]
+
+    print(
+        f"actuator_{i}: "
+        f"ctrl range = "
+        f"[{ctrl_min:.4f}, {ctrl_max:.4f}]"
+    )
+
 
 # ============================================================
-# GRIPPER ACTUATOR LIMIT
+# GRIPPER RANGE
 # ============================================================
+
+GRIPPER_ACTUATOR_ID = actuator_ids[6]
 
 GRIPPER_MIN = model.actuator_ctrlrange[
-    actuator_ids[6],
+    GRIPPER_ACTUATOR_ID,
     0
 ]
 
 GRIPPER_MAX = model.actuator_ctrlrange[
-    actuator_ids[6],
+    GRIPPER_ACTUATOR_ID,
     1
 ]
 
-print(
-    f"Gripper actuator range: "
-    f"[{GRIPPER_MIN:.4f}, {GRIPPER_MAX:.4f}]"
-)
+
+# Start OPEN
+gripper_closed = False
+
+
+def get_gripper_command():
+
+    if gripper_closed:
+
+        return GRIPPER_MAX
+
+    else:
+
+        return GRIPPER_MIN
 
 
 # ============================================================
-# SHARED CARTESIAN TARGET
+# INITIAL CARTESIAN TARGET
 #
-# SO-101 jaw position at qpos =
-# [0, 0, 0, 0, 0, 0]
-#
-# Measured from the actual MuJoCo model.
+# This matches the actual SO-101 home/end-effector
+# position we measured previously.
 # ============================================================
 
 latest_target = np.array([
@@ -107,29 +153,28 @@ latest_target = np.array([
 
 
 # ============================================================
-# SHARED JOINT TARGET
-#
-# J1-J5 are in radians.
+# INITIAL JOINT TARGET
 # ============================================================
 
-latest_joint_command = np.zeros(5)
+latest_joints = np.array([
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+])
 
 
 # ============================================================
-# SHARED GRIPPER COMMAND
-#
-# Controller sends:
-# 0 = open
-# 1 = closed
-#
-# IMPORTANT:
-# The MuJoCo actuator direction is reversed,
-# so the values are converted before being
-# sent to actuator 6.
+# CONTROL MODE
 # ============================================================
 
-latest_gripper = 0
+control_mode = "CARTESIAN"
 
+
+# ============================================================
+# THREADING
+# ============================================================
 
 target_lock = threading.Lock()
 
@@ -137,7 +182,7 @@ running = True
 
 
 # ============================================================
-# INVERSE KINEMATICS
+# IK SOLVER
 # ============================================================
 
 def solve_ik(
@@ -206,18 +251,21 @@ def solve_ik(
             data
         )
 
-    return data.qpos[:5].copy()
+    return data.qpos[
+        :5
+    ].copy()
 
 
 # ============================================================
-# TCP RECEIVER THREAD
+# RECEIVE COMMANDS
 # ============================================================
 
 def receive_commands(connection):
 
     global latest_target
-    global latest_joint_command
-    global latest_gripper
+    global latest_joints
+    global control_mode
+    global gripper_closed
     global running
 
     receive_buffer = ""
@@ -233,7 +281,6 @@ def receive_commands(connection):
             if not data_received:
 
                 running = False
-
                 break
 
             receive_buffer += (
@@ -255,102 +302,133 @@ def receive_commands(connection):
                     continue
 
 
-                # =========================================
+                # ==================================================
                 # CARTESIAN COMMAND
                 #
                 # C,x,y,z,gripper
-                # =========================================
+                # ==================================================
 
                 if message.startswith("C,"):
 
-                    try:
+                    parts = message.split(",")
 
-                        values = message.split(",")
-
-                        x = float(values[1])
-                        y = float(values[2])
-                        z = float(values[3])
-
-                        gripper = int(values[4])
-
-                        new_target = np.array([
-                            x,
-                            y,
-                            z
-                        ])
-
-                        with target_lock:
-
-                            latest_target = (
-                                new_target
-                            )
-
-                            latest_gripper = (
-                                gripper
-                            )
-
-                    except (
-                        ValueError,
-                        IndexError
-                    ):
+                    if len(parts) != 5:
 
                         print(
                             "Invalid Cartesian command:",
                             message
                         )
 
-
-                # =========================================
-                # JOINT COMMAND
-                #
-                # J,j1,j2,j3,j4,j5,gripper
-                #
-                # Joint values are radians.
-                # =========================================
-
-                elif message.startswith("J,"):
+                        continue
 
                     try:
 
-                        values = message.split(",")
+                        x = float(parts[1])
+                        y = float(parts[2])
+                        z = float(parts[3])
+
+                        gripper = int(
+                            parts[4]
+                        )
+
+                    except ValueError:
+
+                        print(
+                            "Invalid Cartesian values:",
+                            message
+                        )
+
+                        continue
+
+
+                    new_target = np.array([
+                        x,
+                        y,
+                        z
+                    ])
+
+
+                    with target_lock:
+
+                        latest_target = (
+                            new_target
+                        )
+
+                        control_mode = (
+                            "CARTESIAN"
+                        )
+
+                        gripper_closed = (
+                            gripper == 1
+                        )
+
+
+                # ==================================================
+                # JOINT COMMAND
+                #
+                # J,j1,j2,j3,j4,j5,gripper
+                # ==================================================
+
+                elif message.startswith("J,"):
+
+                    parts = message.split(",")
+
+                    if len(parts) != 7:
+
+                        print(
+                            "Invalid joint command:",
+                            message
+                        )
+
+                        continue
+
+                    try:
 
                         new_joints = np.array([
-                            float(values[1]),
-                            float(values[2]),
-                            float(values[3]),
-                            float(values[4]),
-                            float(values[5])
+                            float(parts[1]),
+                            float(parts[2]),
+                            float(parts[3]),
+                            float(parts[4]),
+                            float(parts[5])
                         ])
 
                         gripper = int(
-                            values[6]
+                            parts[6]
                         )
 
-                        # Apply joint safety limits
-                        new_joints = np.clip(
-                            new_joints,
-                            JOINT_LIMITS[:, 0],
-                            JOINT_LIMITS[:, 1]
-                        )
-
-                        with target_lock:
-
-                            latest_joint_command = (
-                                new_joints
-                            )
-
-                            latest_gripper = (
-                                gripper
-                            )
-
-                    except (
-                        ValueError,
-                        IndexError
-                    ):
+                    except ValueError:
 
                         print(
-                            "Invalid Joint command:",
+                            "Invalid joint values:",
                             message
+                        )
+
+                        continue
+
+
+                    # ----------------------------------------------
+                    # Safety clamp
+                    # ----------------------------------------------
+
+                    new_joints = np.clip(
+                        new_joints,
+                        JOINT_LIMITS[:, 0],
+                        JOINT_LIMITS[:, 1]
+                    )
+
+
+                    with target_lock:
+
+                        latest_joints = (
+                            new_joints
+                        )
+
+                        control_mode = (
+                            "JOINT"
+                        )
+
+                        gripper_closed = (
+                            gripper == 1
                         )
 
 
@@ -396,14 +474,17 @@ server.bind(
 server.listen(1)
 
 
-print(
-    "SO-101 Gesture Teleoperation Receiver"
-)
-
+print("\n====================================")
+print("SO-101 Gesture Teleoperation Receiver")
+print("====================================")
 print(
     f"Waiting for connection on port {PORT}..."
 )
 
+
+# ============================================================
+# ACCEPT WINDOWS CONTROLLER
+# ============================================================
 
 connection, address = server.accept()
 
@@ -414,7 +495,7 @@ print(
 
 
 # ============================================================
-# START RECEIVER THREAD
+# RECEIVE THREAD
 # ============================================================
 
 receiver_thread = threading.Thread(
@@ -442,23 +523,22 @@ try:
         )
 
         print(
-            "Move your hand to teleoperate the SO-101."
+            "Waiting for teleoperation commands..."
         )
 
 
-        # ====================================================
+        # ========================================================
         # MAIN SIMULATION LOOP
-        # ====================================================
+        # ========================================================
 
         while (
             running
             and viewer.is_running()
         ):
 
-
-            # -----------------------------------------------
-            # GET LATEST COMMANDS
-            # -----------------------------------------------
+            # ----------------------------------------------------
+            # Get latest command
+            # ----------------------------------------------------
 
             with target_lock:
 
@@ -466,66 +546,76 @@ try:
                     latest_target.copy()
                 )
 
-                joint_command = (
-                    latest_joint_command.copy()
+                joints = (
+                    latest_joints.copy()
                 )
 
-                gripper_command = (
-                    latest_gripper
+                mode = control_mode
+
+                current_gripper_closed = (
+                    gripper_closed
                 )
 
 
-            # -----------------------------------------------
-            # DETERMINE CONTROL MODE
-            #
-            # C = Cartesian
-            # J = Joint
-            #
-            # The controller protocol itself determines
-            # which mode is active.
-            # -----------------------------------------------
+            # ====================================================
+            # CARTESIAN MODE
+            # ====================================================
 
-            # We keep track of the most recent command type
-            # using a small variable outside the network thread.
+            if mode == "CARTESIAN":
+
+                joint_positions = solve_ik(
+                    target,
+                    max_iterations=3
+                )
+
+                # -----------------------------------------------
+                # Arm actuators J1-J5
+                # -----------------------------------------------
+
+                for i in range(5):
+
+                    actuator_id = (
+                        actuator_ids[i + 1]
+                    )
+
+                    data.ctrl[
+                        actuator_id
+                    ] = joint_positions[i]
 
 
-            # -----------------------------------------------
-            # JOINT COMMAND
-            # -----------------------------------------------
+            # ====================================================
+            # JOINT MODE
+            # ====================================================
 
-            if joint_command is not None:
+            elif mode == "JOINT":
 
-                pass
+                # -----------------------------------------------
+                # Directly command J1-J5
+                # -----------------------------------------------
+
+                for i in range(5):
+
+                    actuator_id = (
+                        actuator_ids[i + 1]
+                    )
+
+                    data.ctrl[
+                        actuator_id
+                    ] = joints[i]
 
 
-            # -----------------------------------------------
+            # ====================================================
             # GRIPPER
-            #
-            # Controller:
-            #   0 = OPEN
-            #   1 = CLOSED
-            #
-            # MuJoCo actuator direction is reversed:
-            #   CLOSED -> GRIPPER_MIN
-            #   OPEN   -> GRIPPER_MAX
-            # -----------------------------------------------
+            # ====================================================
 
-            if gripper_command == 1:
-
-                data.ctrl[
-                    actuator_ids[6]
-                ] = GRIPPER_MIN
-
-            else:
-
-                data.ctrl[
-                    actuator_ids[6]
-                ] = GRIPPER_MAX
+            data.ctrl[
+                GRIPPER_ACTUATOR_ID
+            ] = get_gripper_command()
 
 
-            # -----------------------------------------------
-            # SIMULATION STEPS
-            # -----------------------------------------------
+            # ====================================================
+            # STEP SIMULATION
+            # ====================================================
 
             for _ in range(20):
 
@@ -535,16 +625,62 @@ try:
                 )
 
 
-            # -----------------------------------------------
+            # ====================================================
             # UPDATE VIEWER
-            # -----------------------------------------------
+            # ====================================================
 
             viewer.sync()
 
 
-            # -----------------------------------------------
-            # SMALL DELAY
-            # -----------------------------------------------
+            # ====================================================
+            # CURRENT POSITION
+            # ====================================================
+
+            current_position = (
+                data.xpos[jaw_id].copy()
+            )
+
+
+            # ====================================================
+            # STATUS
+            # ====================================================
+
+            if mode == "CARTESIAN":
+
+                error = np.linalg.norm(
+                    target
+                    - current_position
+                )
+
+                print(
+                    f"\r"
+                    f"Mode: CARTESIAN | "
+                    f"Target: "
+                    f"[{target[0]:.3f}, "
+                    f"{target[1]:.3f}, "
+                    f"{target[2]:.3f}] | "
+                    f"Error: "
+                    f"{error * 1000:.1f} mm | "
+                    f"Gripper: "
+                    f"{'CLOSED' if current_gripper_closed else 'OPEN'}",
+                    end=""
+                )
+
+            else:
+
+                print(
+                    f"\r"
+                    f"Mode: JOINT | "
+                    f"J1: {joints[0]:.2f} | "
+                    f"J2: {joints[1]:.2f} | "
+                    f"J3: {joints[2]:.2f} | "
+                    f"J4: {joints[3]:.2f} | "
+                    f"J5: {joints[4]:.2f} | "
+                    f"Gripper: "
+                    f"{'CLOSED' if current_gripper_closed else 'OPEN'}",
+                    end=""
+                )
+
 
             time.sleep(
                 0.01
@@ -563,12 +699,21 @@ finally:
     running = False
 
     try:
+
         connection.close()
-    except Exception:
+
+    except:
+
         pass
 
-    server.close()
+    try:
+
+        server.close()
+
+    except:
+
+        pass
 
     print(
-        "Receiver closed."
+        "\nReceiver closed."
     )
