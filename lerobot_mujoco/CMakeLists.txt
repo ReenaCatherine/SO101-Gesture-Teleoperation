@@ -8,12 +8,21 @@ endif()
 find_package(ament_cmake REQUIRED)
 
 install(
-  PROGRAMS scripts/build_scene.py scripts/pose_loop_mujoco.py scripts/view_so101.py
+  PROGRAMS
+    scripts/build_scene.py
+    scripts/pose_loop_mujoco.py
+    scripts/view_so101.py
+    scripts/mirror_real_arm.py
+    scripts/gesture_receiver_test.py
+    scripts/gesture_mujoco.py
+    scripts/ik_mujoco_test.py
+    scripts/ik_test.py
+    scripts/j6_test.py
   DESTINATION lib/${PROJECT_NAME}
 )
 
 install(
-  DIRECTORY urdf meshes
+  DIRECTORY urdf meshes config
   DESTINATION share/${PROJECT_NAME}
 )
 

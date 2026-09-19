@@ -1179,16 +1179,28 @@ try:
                     - landmarks[0].y
                 )
 
+                # Image y points down, so an upright hand gives
+                # atan2(-1, 0) = -pi/2. Measure the tilt relative to
+                # upright (0 = upright, + = tilted right, - = tilted
+                # left) so J5 can move in both directions.
+
                 hand_angle = math.atan2(
-                    wrist_to_index_y,
-                    wrist_to_index_x
+                    wrist_to_index_x,
+                    -wrist_to_index_y
                 )
 
-                joints[4] += (
-                    hand_angle
-                    * 0.005
-                    * (speed / 50)
-                )
+                if abs(hand_angle) > 0.15:
+
+                    if hand_angle > 0:
+                        movement = hand_angle - 0.15
+                    else:
+                        movement = hand_angle + 0.15
+
+                    joints[4] += (
+                        movement
+                        * 0.05
+                        * (speed / 50)
+                    )
 
 
                 # ------------------------------------------------
